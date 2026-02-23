@@ -208,4 +208,3 @@ When vendor taps "Mark Task Complete":
 | `src/components/PMTaskReviewDialog.tsx` | Show geo coordinates + resolved issues |
 | `src/App.tsx` | Auth routes + protected wrappers |
 | `src/data/mockData.ts` | Kept for reference, no longer imported |
-
