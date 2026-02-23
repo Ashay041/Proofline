@@ -20,7 +20,7 @@ import SubmissionHistoryDialog from "@/components/task/SubmissionHistoryDialog";
 import { TaskPhotos, TaskIssuesList } from "@/components/task/TaskSharedWidgets";
 import {
   ArrowLeft, Clock, CalendarDays, AlertTriangle, Camera,
-  MessageCircle, CheckCircle2, History, Info, Phone, MapPin,
+  MessageCircle, CheckCircle2, History, Info, MapPin,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
