@@ -1,1 +1,6 @@
 project_id = "jphhjpozlcnfpywynvys"
+
+# Simple signup: no email verification (local Supabase only).
+# For hosted Supabase: disable "Confirm email" in Dashboard → Authentication → Providers → Email.
+[auth.email]
+enable_confirmations = false
