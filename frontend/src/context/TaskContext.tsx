@@ -7,7 +7,8 @@ import { createContext, useContext, useCallback, useEffect, useState, type React
 import { supabase } from "@backend/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { fromDbStatus, fromDbPriority, toDbStatus, toDbPriority } from "@backend/lib/statusMapping";
-import type { Task, Unit, Vendor, Property, ReportedIssue, ChecklistItem, ReworkItem, TaskSubmission } from "@backend/types";
+import type { Task, Unit, Vendor, Property, ReportedIssue, ChecklistItem, ReworkItem, TaskSubmission, UnitDocument } from "@backend/types";
+import type { ParsedUnit } from "@/lib/rentRollParser";
 import type { Json } from "@backend/integrations/supabase/types";
 
 // ─── Context shape ──────────────────────────────────────────────
@@ -36,6 +37,11 @@ interface AppState {
   createUnit: (propertyId: string, unitNumber: string) => Promise<void>;
   updateUnit: (unitId: string, updates: Partial<Unit>) => Promise<void>;
   deleteUnit: (unitId: string) => Promise<void>;
+  bulkUpsertUnits: (propertyId: string, parsedUnits: ParsedUnit[]) => Promise<void>;
+  // Unit document actions
+  fetchUnitDocuments: (unitId: string) => Promise<UnitDocument[]>;
+  addUnitDocument: (unitId: string, fileUrl: string, fileName: string, fileType: string) => Promise<UnitDocument>;
+  deleteUnitDocument: (docId: string) => Promise<void>;
   // Vendor actions
   createVendor: (vendor: Vendor) => Promise<void>;
   updateVendor: (vendorId: string, updates: Partial<Vendor>) => Promise<void>;
@@ -241,6 +247,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         address: u.properties?.address ?? "",
         turnoverStatus: "",
         taskIds: unitTaskIds,
+        unitType: u.unit_type ?? undefined,
+        sqFt: u.sq_ft ?? undefined,
+        tenantName: u.tenant_name ?? undefined,
+        leaseStart: u.lease_start ?? undefined,
+        leaseEnd: u.lease_end ?? undefined,
+        leaseTermMonths: u.lease_term_months ?? undefined,
+        moveInDate: u.move_in_date ?? undefined,
+        securityDeposit: u.security_deposit != null ? Number(u.security_deposit) : undefined,
+        monthlyRent: u.monthly_rent != null ? Number(u.monthly_rent) : undefined,
+        lastIncrease: u.last_increase != null ? Number(u.last_increase) : undefined,
+        concession: u.concession != null ? Number(u.concession) : undefined,
+        parking: u.parking != null ? Number(u.parking) : undefined,
+        lateFee: u.late_fee != null ? Number(u.late_fee) : undefined,
+        otherFee: u.other_fee != null ? Number(u.other_fee) : undefined,
+        marketRent: u.market_rent != null ? Number(u.market_rent) : undefined,
+        leaseStatus: u.lease_status ?? undefined,
+        occupants: u.occupants ?? undefined,
+        petRent: u.pet_rent != null ? Number(u.pet_rent) : undefined,
+        arrears: u.arrears != null ? Number(u.arrears) : undefined,
+        moveInSpecials: u.move_in_specials ?? undefined,
+        subsidizedRent: u.subsidized_rent != null ? Number(u.subsidized_rent) : undefined,
+        lastPaidDate: u.last_paid_date ?? undefined,
+        utilityBillbacks: u.utility_billbacks != null ? Number(u.utility_billbacks) : undefined,
+        leaseBreakFee: u.lease_break_fee != null ? Number(u.lease_break_fee) : undefined,
+        annualRent: u.annual_rent != null ? Number(u.annual_rent) : undefined,
+        notes: u.notes ?? undefined,
       };
     });
     setUnits(unitsMap);
@@ -630,6 +662,122 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     });
   }, [units]);
 
+  const bulkUpsertUnits = useCallback(async (propertyId: string, parsedUnits: ParsedUnit[]) => {
+    const prop = properties[propertyId];
+    const existingUnits = Object.values(units).filter(u => u.propertyId === propertyId);
+    const existingByNumber: Record<string, Unit> = {};
+    existingUnits.forEach(u => { existingByNumber[u.unitNumber] = u; });
+
+    for (const pu of parsedUnits) {
+      const row: Record<string, unknown> = {
+        property_id: propertyId,
+        unit_number: pu.unitNumber,
+        unit_type: pu.unitType ?? null,
+        sq_ft: pu.sqFt ?? null,
+        tenant_name: pu.tenantName ?? null,
+        lease_start: pu.leaseStart ?? null,
+        lease_end: pu.leaseEnd ?? null,
+        lease_term_months: pu.leaseTermMonths ?? null,
+        move_in_date: pu.moveInDate ?? null,
+        security_deposit: pu.securityDeposit ?? null,
+        monthly_rent: pu.monthlyRent ?? null,
+        market_rent: pu.marketRent ?? null,
+        last_increase: pu.lastIncrease ?? null,
+        concession: pu.concession ?? null,
+        parking: pu.parking ?? null,
+        late_fee: pu.lateFee ?? null,
+        other_fee: pu.otherFee ?? null,
+        lease_status: pu.leaseStatus ?? null,
+        occupants: pu.occupants ?? null,
+        pet_rent: pu.petRent ?? null,
+        arrears: pu.arrears ?? null,
+        move_in_specials: pu.moveInSpecials ?? null,
+        subsidized_rent: pu.subsidizedRent ?? null,
+        last_paid_date: pu.lastPaidDate ?? null,
+        utility_billbacks: pu.utilityBillbacks ?? null,
+        lease_break_fee: pu.leaseBreakFee ?? null,
+        annual_rent: pu.annualRent ?? null,
+        notes: pu.notes ?? null,
+      };
+
+      const existing = existingByNumber[pu.unitNumber];
+      if (existing) {
+        const { error } = await supabase.from("units").update(row).eq("id", existing.id);
+        if (error) throw error;
+        setUnits(prev => ({
+          ...prev,
+          [existing.id]: {
+            ...prev[existing.id],
+            ...pu,
+            propertyName: prop?.name ?? "",
+            address: prop?.address ?? "",
+          },
+        }));
+      } else {
+        const { data, error } = await supabase.from("units").insert(row).select().single();
+        if (error) throw error;
+        if (data) {
+          setUnits(prev => ({
+            ...prev,
+            [data.id]: {
+              id: data.id,
+              propertyId,
+              unitNumber: pu.unitNumber,
+              propertyName: prop?.name ?? "",
+              address: prop?.address ?? "",
+              turnoverStatus: "",
+              taskIds: [],
+              ...pu,
+            },
+          }));
+        }
+      }
+    }
+  }, [properties, units]);
+
+  // ── Unit document actions ──
+
+  const fetchUnitDocuments = useCallback(async (unitId: string): Promise<UnitDocument[]> => {
+    const { data, error } = await supabase
+      .from("unit_documents")
+      .select("*")
+      .eq("unit_id", unitId)
+      .order("uploaded_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map((d: any) => ({
+      id: d.id,
+      unitId: d.unit_id,
+      fileUrl: d.file_url,
+      fileName: d.file_name,
+      fileType: d.file_type,
+      uploadedAt: d.uploaded_at,
+    }));
+  }, []);
+
+  const addUnitDocument = useCallback(async (
+    unitId: string, fileUrl: string, fileName: string, fileType: string
+  ): Promise<UnitDocument> => {
+    const { data, error } = await supabase
+      .from("unit_documents")
+      .insert({ unit_id: unitId, file_url: fileUrl, file_name: fileName, file_type: fileType })
+      .select()
+      .single();
+    if (error) throw error;
+    return {
+      id: data.id,
+      unitId: data.unit_id,
+      fileUrl: data.file_url,
+      fileName: data.file_name,
+      fileType: data.file_type,
+      uploadedAt: data.uploaded_at,
+    };
+  }, []);
+
+  const deleteUnitDocument = useCallback(async (docId: string) => {
+    const { error } = await supabase.from("unit_documents").delete().eq("id", docId);
+    if (error) throw error;
+  }, []);
+
   // ── Vendor actions (PM CRUD via vendors table) ──
 
   const createVendor = useCallback(async (vendor: Vendor) => {
@@ -693,7 +841,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         toggleChecklistItem, addPhoto, addIssue, completeTask, getProgress,
         createTask, updateTask, deleteTask, requestRework,
         createProperty, updateProperty, deleteProperty,
-        createUnit, updateUnit, deleteUnit,
+        createUnit, updateUnit, deleteUnit, bulkUpsertUnits,
+        fetchUnitDocuments, addUnitDocument, deleteUnitDocument,
         createVendor, updateVendor, deleteVendor,
         refresh: fetchData,
       }}

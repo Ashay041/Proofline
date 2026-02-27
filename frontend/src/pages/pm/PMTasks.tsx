@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,8 +16,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "@/components/ui/select";
 import { useAppState } from "@/context/TaskContext";
-import { type Task, type ChecklistItem } from "@backend/types";
-import { Plus, Pencil, Trash2, CheckCircle2, Eye, Camera, RotateCcw, Search, SlidersHorizontal, ClipboardList } from "lucide-react";
+import { type Task, type ChecklistItem, type UnitDocument } from "@backend/types";
+import {
+  Plus, Pencil, Trash2, CheckCircle2, Eye, Camera, RotateCcw,
+  Search, SlidersHorizontal, ClipboardList, Upload, FileText,
+  FileSpreadsheet, ImageIcon, Loader2,
+} from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import PMTaskReviewDialog from "@/components/PMTaskReviewDialog";
 import * as TaskService from "@backend/services/taskService";
@@ -36,12 +40,28 @@ const emptyForm = {
   specsText: "",
 };
 
+function docIcon(fileType: string) {
+  if (fileType === "image") return <ImageIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+  if (fileType === "pdf") return <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+  return <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+}
+
+function detectFileType(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext)) return "image";
+  if (ext === "pdf") return "pdf";
+  return "spreadsheet";
+}
+
 const PMTasks = () => {
-  const { tasks, units, vendors, createTask, updateTask, deleteTask, getProgress } = useAppState();
+  const { tasks, units, vendors, createTask, updateTask, deleteTask, getProgress, fetchUnitDocuments, addUnitDocument, deleteUnitDocument } = useAppState();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [reviewTask, setReviewTask] = useState<Task | null>(null);
+  const [unitDocs, setUnitDocs] = useState<UnitDocument[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docUploading, setDocUploading] = useState(false);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
@@ -53,6 +73,47 @@ const PMTasks = () => {
 
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!form.unitId || !dialogOpen) { setUnitDocs([]); return; }
+    setDocsLoading(true);
+    fetchUnitDocuments(form.unitId).then(setUnitDocs).catch(() => {}).finally(() => setDocsLoading(false));
+  }, [form.unitId, dialogOpen, fetchUnitDocuments]);
+
+  const handleDocUpload = async () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*,.pdf,.xlsx,.xls,.csv";
+    input.multiple = true;
+    input.onchange = async () => {
+      const files = input.files;
+      if (!files || !form.unitId) return;
+      setDocUploading(true);
+      const { uploadUnitDocument } = await import("@backend/lib/supabaseStorage");
+      for (const file of Array.from(files)) {
+        try {
+          const url = await uploadUnitDocument(form.unitId, file);
+          const fileType = detectFileType(file.name);
+          const doc = await addUnitDocument(form.unitId, url, file.name, fileType);
+          setUnitDocs(prev => [doc, ...prev]);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : "Upload failed";
+          toast({ title: "Upload failed", description: msg, variant: "destructive" });
+        }
+      }
+      setDocUploading(false);
+    };
+    input.click();
+  };
+
+  const handleDocDelete = async (docId: string) => {
+    try {
+      await deleteUnitDocument(docId);
+      setUnitDocs(prev => prev.filter(d => d.id !== docId));
+    } catch {
+      toast({ title: "Failed to remove", variant: "destructive" });
+    }
+  };
 
   const taskList = Object.values(tasks);
   const unitList = Object.values(units);
@@ -490,6 +551,37 @@ const PMTasks = () => {
               <label className="text-sm font-medium text-foreground">Specifications (one per line)</label>
               <Textarea value={form.specsText} onChange={(e) => setForm({ ...form, specsText: e.target.value })} rows={3} placeholder="Use EcoClean for counters&#10;Do NOT use bleach on hardwood" className="mt-1" />
             </div>
+
+            {/* Unit Documents — floor plans, details to send to vendor */}
+            {form.unitId && (
+              <div className="rounded-lg border p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-foreground">Floor Plans & Unit Documents</label>
+                  <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleDocUpload} disabled={docUploading}>
+                    {docUploading ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Upload className="h-3.5 w-3.5 mr-1" />}
+                    Upload
+                  </Button>
+                </div>
+                {docsLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading...</div>
+                ) : unitDocs.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No documents for this unit. Upload floor plans, PDFs, or images — vendors will see these with the task.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {unitDocs.map(doc => (
+                      <div key={doc.id} className="flex items-center gap-2 text-xs rounded border p-1.5">
+                        {docIcon(doc.fileType)}
+                        <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer" className="flex-1 min-w-0 truncate hover:underline">{doc.fileName}</a>
+                        <button className="shrink-0 text-destructive opacity-50 hover:opacity-100 transition-opacity" onClick={() => handleDocDelete(doc.id)} title="Remove">
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <Button className="w-full" onClick={handleSave}>
               {editingId ? "Save Changes" : "Create Task"}
             </Button>
