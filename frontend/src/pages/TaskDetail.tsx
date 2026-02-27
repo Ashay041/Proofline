@@ -156,8 +156,8 @@ const TaskDetail = () => {
           </Card>
         </section>
 
-        {/* Unit Info Package */}
-        {unit && (unit.unitType || unit.sqFt || unit.tenantName || unit.monthlyRent || unit.leaseStatus) && (
+        {/* Unit Info Package — only physical details relevant to the vendor */}
+        {unit && (unit.unitType || unit.sqFt) && (
           <section>
             <h2 className="text-base font-semibold text-foreground mb-2 flex items-center gap-1">
               <Home className="h-4 w-4" /> Unit Details
@@ -167,14 +167,6 @@ const TaskDetail = () => {
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
                   {unit.unitType && <div><span className="text-muted-foreground">Type:</span> <span className="font-medium">{unit.unitType}</span></div>}
                   {unit.sqFt != null && <div><span className="text-muted-foreground">Sq Ft:</span> <span className="font-medium">{unit.sqFt.toLocaleString()}</span></div>}
-                  {unit.tenantName && <div><span className="text-muted-foreground">Tenant:</span> <span className="font-medium">{unit.tenantName}</span></div>}
-                  {unit.leaseStatus && <div><span className="text-muted-foreground">Status:</span> <span className="font-medium">{unit.leaseStatus}</span></div>}
-                  {unit.monthlyRent != null && <div><span className="text-muted-foreground">Rent:</span> <span className="font-medium">${unit.monthlyRent.toLocaleString()}/mo</span></div>}
-                  {unit.marketRent != null && <div><span className="text-muted-foreground">Market:</span> <span className="font-medium">${unit.marketRent.toLocaleString()}/mo</span></div>}
-                  {unit.leaseStart && <div><span className="text-muted-foreground">Lease Start:</span> <span className="font-medium">{unit.leaseStart}</span></div>}
-                  {unit.leaseEnd && <div><span className="text-muted-foreground">Lease End:</span> <span className="font-medium">{unit.leaseEnd}</span></div>}
-                  {unit.securityDeposit != null && <div><span className="text-muted-foreground">Deposit:</span> <span className="font-medium">${unit.securityDeposit.toLocaleString()}</span></div>}
-                  {unit.parking != null && unit.parking !== 0 && <div><span className="text-muted-foreground">Parking:</span> <span className="font-medium">${unit.parking.toLocaleString()}</span></div>}
                 </div>
                 {unit.notes && <p className="text-sm text-muted-foreground border-t pt-2 mt-2">{unit.notes}</p>}
               </CardContent>
