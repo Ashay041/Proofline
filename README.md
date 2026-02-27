@@ -2,8 +2,6 @@
 
 Proofline is a B2B SaaS web app for **unit turnover management** in multifamily property: **property managers (PMs)** create and assign tasks, **vendors** (cleaners, painters, etc.) complete work and submit proof. The app gives PMs visibility into progress and holds vendors accountable via **photo proof** and **geo-location at submit** (no QR codes: vendors log in, see all assigned tasks, and location is captured only when they mark a task complete).
 
-This README gives enough context for an LLM or new developer to understand the codebase and build on it.
-
 ---
 
 ## 1. Product summary
