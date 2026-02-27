@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +30,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAppState } from "@/context/TaskContext";
+import { supabase } from "@backend/integrations/supabase/client";
 import type { Property, Unit } from "@backend/types";
+import { parseRentRoll, type ParsedUnit } from "@/lib/rentRollParser";
 import {
   Building2,
   ChevronRight,
@@ -40,6 +42,13 @@ import {
   Trash2,
   Search,
   DoorOpen,
+  Upload,
+  FileSpreadsheet,
+  Loader2,
+  X,
+  PlusCircle,
+  Minus,
+  GripVertical,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
@@ -58,6 +67,7 @@ const PMUnits = () => {
     createUnit,
     updateUnit,
     deleteUnit,
+    bulkUpsertUnits,
   } = useAppState();
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -74,6 +84,23 @@ const PMUnits = () => {
 
   const [deletePropertyTarget, setDeletePropertyTarget] = useState<string | null>(null);
   const [deleteUnitTarget, setDeleteUnitTarget] = useState<string | null>(null);
+
+  // Rent roll upload state
+  const [rentRollOpen, setRentRollOpen] = useState(false);
+  const [rrStep, setRrStep] = useState<"upload" | "preview">("upload");
+  const [rrPropertyId, setRrPropertyId] = useState<string>("__new__");
+  const [rrNewPropertyName, setRrNewPropertyName] = useState("");
+  const [rrNewPropertyAddress, setRrNewPropertyAddress] = useState("");
+  const [rrParsedUnits, setRrParsedUnits] = useState<ParsedUnit[]>([]);
+  const [rrFileName, setRrFileName] = useState("");
+  const [rrParsing, setRrParsing] = useState(false);
+  const [rrImporting, setRrImporting] = useState(false);
+  const [rrColumns, setRrColumns] = useState<(keyof ParsedUnit)[]>([]);
+  const [dragRowIdx, setDragRowIdx] = useState<number | null>(null);
+  const [dropRowIdx, setDropRowIdx] = useState<number | null>(null);
+  const [dragColKey, setDragColKey] = useState<keyof ParsedUnit | null>(null);
+  const [dropColKey, setDropColKey] = useState<keyof ParsedUnit | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const propertyList = useMemo(() => Object.values(properties), [properties]);
   const unitList = useMemo(() => Object.values(units), [units]);
@@ -220,13 +247,190 @@ const PMUnits = () => {
     }
   };
 
+  const resetRentRoll = () => {
+    setRrStep("upload");
+    setRrPropertyId("__new__");
+    setRrNewPropertyName("");
+    setRrNewPropertyAddress("");
+    setRrParsedUnits([]);
+    setRrFileName("");
+    setRrParsing(false);
+    setRrImporting(false);
+    setRrColumns([]);
+  };
+
+  const updateRrUnit = (index: number, field: keyof ParsedUnit, value: unknown) => {
+    setRrParsedUnits(prev => prev.map((u, i) => i === index ? { ...u, [field]: value } : u));
+  };
+
+  const removeRrUnit = (index: number) => {
+    setRrParsedUnits(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const addEmptyRrUnit = (afterIndex?: number) => {
+    setRrParsedUnits(prev => {
+      const newRow: ParsedUnit = { unitNumber: "" };
+      if (afterIndex != null) {
+        const next = [...prev];
+        next.splice(afterIndex + 1, 0, newRow);
+        return next;
+      }
+      return [...prev, newRow];
+    });
+  };
+
+  const ALL_COLUMNS: { key: keyof ParsedUnit; label: string; type: "text" | "number" | "date" }[] = [
+    { key: "unitNumber", label: "Unit", type: "text" },
+    { key: "tenantName", label: "Tenant", type: "text" },
+    { key: "leaseStatus", label: "Status", type: "text" },
+    { key: "sqFt", label: "Sq Ft", type: "number" },
+    { key: "leaseStart", label: "Lease Start", type: "date" },
+    { key: "leaseEnd", label: "Lease End", type: "date" },
+    { key: "monthlyRent", label: "Rent", type: "number" },
+    { key: "marketRent", label: "Market Rent", type: "number" },
+    { key: "securityDeposit", label: "Deposit", type: "number" },
+    { key: "parking", label: "Parking", type: "number" },
+    { key: "petRent", label: "Pet Rent", type: "number" },
+    { key: "occupants", label: "Occupants", type: "number" },
+    { key: "arrears", label: "Arrears", type: "number" },
+    { key: "moveInSpecials", label: "Move-in Specials", type: "text" },
+    { key: "subsidizedRent", label: "Subsidized", type: "number" },
+    { key: "lastPaidDate", label: "Last Paid", type: "date" },
+    { key: "utilityBillbacks", label: "Billbacks", type: "number" },
+    { key: "leaseBreakFee", label: "Break Fee", type: "number" },
+    { key: "annualRent", label: "Annual Rent", type: "number" },
+    { key: "unitType", label: "Unit Type", type: "text" },
+    { key: "notes", label: "Notes", type: "text" },
+  ];
+
+  const colMeta = (key: keyof ParsedUnit) => ALL_COLUMNS.find(c => c.key === key);
+  const addableColumns = ALL_COLUMNS.filter(c => !rrColumns.includes(c.key));
+
+  const autoDetectColumns = (units: ParsedUnit[]) => {
+    const found: (keyof ParsedUnit)[] = ["unitNumber"];
+    for (const col of ALL_COLUMNS) {
+      if (col.key === "unitNumber") continue;
+      if (units.some(u => u[col.key] != null && u[col.key] !== "")) {
+        found.push(col.key);
+      }
+    }
+    setRrColumns(found);
+  };
+
+  const removeRrColumn = (key: keyof ParsedUnit) => {
+    if (key === "unitNumber") return;
+    setRrColumns(prev => prev.filter(k => k !== key));
+    setRrParsedUnits(prev => prev.map(u => { const next = { ...u }; delete (next as any)[key]; return next; }));
+  };
+
+  const addRrColumn = (key: keyof ParsedUnit) => {
+    setRrColumns(prev => [...prev, key]);
+  };
+
+  const handleRowDragEnd = () => {
+    if (dragRowIdx != null && dropRowIdx != null && dragRowIdx !== dropRowIdx) {
+      setRrParsedUnits(prev => {
+        const next = [...prev];
+        const [moved] = next.splice(dragRowIdx, 1);
+        next.splice(dropRowIdx, 0, moved);
+        return next;
+      });
+    }
+    setDragRowIdx(null);
+    setDropRowIdx(null);
+  };
+
+  const handleColDragEnd = () => {
+    if (dragColKey != null && dropColKey != null && dragColKey !== dropColKey) {
+      setRrColumns(prev => {
+        const next = [...prev];
+        const fromIdx = next.indexOf(dragColKey);
+        const toIdx = next.indexOf(dropColKey);
+        if (fromIdx === -1 || toIdx === -1) return prev;
+        next.splice(fromIdx, 1);
+        next.splice(toIdx, 0, dragColKey);
+        return next;
+      });
+    }
+    setDragColKey(null);
+    setDropColKey(null);
+  };
+
+  const handleRentRollFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRrFileName(file.name);
+    setRrParsing(true);
+    try {
+      const parsed = await parseRentRoll(file);
+      if (parsed.length === 0) {
+        toast({ title: "No units found", description: "The file didn't contain any parseable unit rows.", variant: "destructive" });
+        setRrParsing(false);
+        return;
+      }
+      setRrParsedUnits(parsed);
+      autoDetectColumns(parsed);
+      setRrStep("preview");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to parse file";
+      toast({ title: "Parse error", description: msg, variant: "destructive" });
+    }
+    setRrParsing(false);
+  };
+
+  const handleRentRollImport = async () => {
+    const validUnits = rrParsedUnits.filter(u => u.unitNumber.trim());
+    if (validUnits.length === 0) {
+      toast({ title: "No valid units", description: "Every unit must have a unit number.", variant: "destructive" });
+      return;
+    }
+
+    setRrImporting(true);
+    try {
+      let targetPropertyId = rrPropertyId;
+      if (rrPropertyId === "__new__") {
+        const propName = rrNewPropertyName.trim() || "Default Property";
+        await createProperty(propName, rrNewPropertyAddress.trim() || undefined);
+        await new Promise(r => setTimeout(r, 100));
+
+        const allProps = Object.values(properties);
+        const newProp = allProps.find(p => p.name === propName);
+        if (!newProp) {
+          const { data } = await supabase.from("properties").select("id").eq("name", propName).limit(1).single();
+          if (!data) {
+            toast({ title: "Failed to find created property", variant: "destructive" });
+            setRrImporting(false);
+            return;
+          }
+          targetPropertyId = data.id;
+        } else {
+          targetPropertyId = newProp.id;
+        }
+      }
+
+      await bulkUpsertUnits(targetPropertyId, validUnits);
+      toast({ title: "Rent roll imported", description: `${validUnits.length} unit(s) imported successfully.` });
+      setRentRollOpen(false);
+      resetRentRoll();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Import failed";
+      toast({ title: "Import failed", description: msg, variant: "destructive" });
+    }
+    setRrImporting(false);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-bold text-foreground">Properties & Units</h2>
-        <Button onClick={openAddProperty} size="sm">
-          <Plus className="h-4 w-4 mr-1" /> Add Property
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={() => { resetRentRoll(); setRentRollOpen(true); }} size="sm" variant="outline">
+            <Upload className="h-4 w-4 mr-1" /> Upload Rent Roll
+          </Button>
+          <Button onClick={openAddProperty} size="sm">
+            <Plus className="h-4 w-4 mr-1" /> Add Property
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -350,6 +554,19 @@ const PMUnits = () => {
                             <CardContent className="p-3 flex items-center justify-between gap-2">
                               <div className="min-w-0 flex-1">
                                 <p className="font-medium text-foreground">Unit {unit.unitNumber}</p>
+                                {(unit.unitType || unit.sqFt || unit.monthlyRent || unit.leaseStatus) && (
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    {[
+                                      unit.leaseStatus,
+                                      unit.unitType,
+                                      unit.sqFt ? `${unit.sqFt} sqft` : null,
+                                      unit.monthlyRent != null ? `$${unit.monthlyRent.toLocaleString()}/mo` : null,
+                                    ].filter(Boolean).join(" · ")}
+                                  </p>
+                                )}
+                                {unit.tenantName && (
+                                  <p className="text-xs text-muted-foreground">{unit.tenantName}</p>
+                                )}
                                 <div className="flex items-center gap-2 mt-1 flex-wrap">
                                   <Badge variant="outline" className={statusStyle}>
                                     {derivedStatus}
@@ -509,6 +726,233 @@ const PMUnits = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Rent Roll Upload Dialog */}
+      <Dialog open={rentRollOpen} onOpenChange={(open) => { if (!open) { setRentRollOpen(false); resetRentRoll(); } }}>
+        <DialogContent className={rrStep === "preview" ? "max-w-4xl max-h-[90vh] flex flex-col" : "max-w-md"}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5" />
+              {rrStep === "upload" ? "Upload Rent Roll" : "Preview & Confirm Import"}
+            </DialogTitle>
+            <DialogDescription>
+              {rrStep === "upload"
+                ? "Upload a CSV or Excel file with unit data. Existing units (matched by unit number) will be updated."
+                : `${rrParsedUnits.length} unit(s) found in ${rrFileName}. Review and confirm.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          {rrStep === "upload" && (
+            <div className="space-y-4 py-2">
+              <div>
+                <label className="text-sm font-medium text-foreground">Property *</label>
+                <Select value={rrPropertyId} onValueChange={setRrPropertyId}>
+                  <SelectTrigger className="mt-1">
+                    <SelectValue placeholder="Select a property" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__new__">+ Create new property</SelectItem>
+                    {propertyList.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {rrPropertyId === "__new__" && (
+                <div className="space-y-2 rounded-lg border p-3 bg-muted/30">
+                  <div>
+                    <label className="text-sm font-medium text-foreground">Property Name</label>
+                    <Input
+                      value={rrNewPropertyName}
+                      onChange={(e) => setRrNewPropertyName(e.target.value)}
+                      placeholder="Leave blank to use file name as property name"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-foreground">Address</label>
+                    <Input
+                      value={rrNewPropertyAddress}
+                      onChange={(e) => setRrNewPropertyAddress(e.target.value)}
+                      placeholder="Street, city"
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="text-sm font-medium text-foreground">Rent Roll File *</label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={handleRentRollFile}
+                  className="hidden"
+                />
+                <Button
+                  variant="outline"
+                  className="w-full mt-1 h-20 border-dashed flex flex-col gap-1"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={rrParsing}
+                >
+                  {rrParsing ? (
+                    <><Loader2 className="h-5 w-5 animate-spin" /> Parsing...</>
+                  ) : rrFileName ? (
+                    <><FileSpreadsheet className="h-5 w-5" /> {rrFileName}</>
+                  ) : (
+                    <><Upload className="h-5 w-5" /> Click to upload CSV or Excel</>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {rrStep === "preview" && (
+            <div className="flex-1 min-h-0 flex flex-col gap-3">
+              <div className="flex-1 rounded-md border overflow-auto">
+                <div className="min-w-max">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50 sticky top-0 z-10">
+                      <tr>
+                        <th className="w-5 p-0"></th>
+                        {rrColumns.map((colKey) => {
+                          const meta = colMeta(colKey);
+                          const isDragOver = dropColKey === colKey && dragColKey !== colKey;
+                          return (
+                            <th
+                              key={colKey}
+                              className={`text-left p-1 font-medium whitespace-nowrap cursor-grab active:cursor-grabbing select-none transition-colors ${isDragOver ? "bg-primary/10" : ""}`}
+                              draggable
+                              onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; setDragColKey(colKey); }}
+                              onDragOver={(e) => { e.preventDefault(); setDropColKey(colKey); }}
+                              onDragLeave={() => { if (dropColKey === colKey) setDropColKey(null); }}
+                              onDragEnd={handleColDragEnd}
+                              onDrop={handleColDragEnd}
+                            >
+                              <span className="inline-flex items-center gap-0.5">
+                                {meta?.label ?? colKey}
+                                {colKey !== "unitNumber" && (
+                                  <button
+                                    className="opacity-40 hover:opacity-100 hover:text-destructive transition-opacity p-0 leading-none"
+                                    onClick={() => removeRrColumn(colKey)}
+                                    title={`Remove ${meta?.label} column`}
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                )}
+                              </span>
+                            </th>
+                          );
+                        })}
+                        <th className="p-1 w-[60px]">
+                          {addableColumns.length > 0 && (
+                            <select
+                              className="h-6 w-6 opacity-40 hover:opacity-100 cursor-pointer bg-transparent appearance-none text-center"
+                              value=""
+                              onChange={(e) => { if (e.target.value) addRrColumn(e.target.value as keyof ParsedUnit); }}
+                              title="Add column"
+                              style={{ backgroundImage: "none" }}
+                            >
+                              <option value="" disabled>+</option>
+                              {addableColumns.map(c => (
+                                <option key={c.key} value={c.key}>{c.label}</option>
+                              ))}
+                            </select>
+                          )}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rrParsedUnits.map((u, i) => {
+                        const isRowDragOver = dropRowIdx === i && dragRowIdx !== i;
+                        return (
+                        <tr key={i} className={`border-t group/row transition-colors ${isRowDragOver ? "bg-primary/10" : ""}`}>
+                          <td className="p-0 w-5 align-middle">
+                            <span className="flex flex-col items-center opacity-0 group-hover/row:opacity-40 hover:!opacity-100 transition-opacity">
+                              <span
+                                className="cursor-grab active:cursor-grabbing flex items-center justify-center w-5 h-4"
+                                draggable
+                                onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.stopPropagation(); setDragRowIdx(i); }}
+                                onDragOver={(e) => { e.preventDefault(); setDropRowIdx(i); }}
+                                onDragLeave={() => { if (dropRowIdx === i) setDropRowIdx(null); }}
+                                onDragEnd={handleRowDragEnd}
+                                onDrop={handleRowDragEnd}
+                                title="Drag to reorder"
+                              >
+                                <GripVertical className="h-3 w-3" />
+                              </span>
+                              <button
+                                className="flex items-center justify-center w-5 h-3 hover:text-destructive"
+                                onClick={() => removeRrUnit(i)}
+                                title="Delete row"
+                              >
+                                <Minus className="h-2.5 w-2.5" />
+                              </button>
+                            </span>
+                          </td>
+                          {rrColumns.map((colKey) => {
+                            const meta = colMeta(colKey);
+                            const inputType = meta?.type === "number" ? "number" : meta?.type === "date" ? "date" : "text";
+                            const width = meta?.type === "date" ? "w-[110px]" : meta?.type === "number" ? "w-[70px]" : colKey === "notes" || colKey === "moveInSpecials" ? "w-[120px]" : "w-[90px]";
+                            const val = u[colKey] ?? "";
+                            return (
+                              <td key={colKey} className="p-0.5">
+                                <Input
+                                  className={`h-7 text-xs ${width}`}
+                                  type={inputType}
+                                  value={val}
+                                  onChange={(e) => {
+                                    const raw = e.target.value;
+                                    const parsed = raw === "" ? undefined : meta?.type === "number" ? Number(raw) : raw;
+                                    updateRrUnit(i, colKey, parsed);
+                                  }}
+                                />
+                              </td>
+                            );
+                          })}
+                          <td className="p-0.5">
+                            <button
+                              className="opacity-0 group-hover/row:opacity-40 hover:!opacity-100 hover:text-primary transition-opacity flex items-center justify-center w-5 h-7"
+                              onClick={() => addEmptyRrUnit(i)}
+                              title="Insert row below"
+                            >
+                              <PlusCircle className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                        );
+                      })}
+                      <tr className="border-t">
+                        <td className="p-0 w-5"></td>
+                        <td className="p-0.5" colSpan={rrColumns.length + 1}>
+                          <button
+                            className="h-6 w-6 rounded flex items-center justify-center opacity-30 hover:opacity-100 hover:text-primary transition-opacity"
+                            onClick={() => addEmptyRrUnit()}
+                            title="Add row"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <Button variant="outline" size="sm" onClick={() => { setRrStep("upload"); setRrParsedUnits([]); setRrFileName(""); setRrColumns([]); }}>
+                  Back
+                </Button>
+                <Button onClick={handleRentRollImport} disabled={rrImporting || rrParsedUnits.length === 0}>
+                  {rrImporting ? <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Importing...</> : `Confirm & Import ${rrParsedUnits.length} Unit(s)`}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

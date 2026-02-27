@@ -96,6 +96,42 @@ export interface Unit {
   readonly address: string;
   readonly turnoverStatus: string;
   readonly taskIds: string[];
+  readonly unitType?: string;
+  readonly sqFt?: number;
+  readonly tenantName?: string;
+  readonly leaseStart?: string;
+  readonly leaseEnd?: string;
+  readonly leaseTermMonths?: number;
+  readonly moveInDate?: string;
+  readonly securityDeposit?: number;
+  readonly monthlyRent?: number;
+  readonly lastIncrease?: number;
+  readonly concession?: number;
+  readonly parking?: number;
+  readonly lateFee?: number;
+  readonly otherFee?: number;
+  readonly marketRent?: number;
+  readonly leaseStatus?: string;
+  readonly occupants?: number;
+  readonly petRent?: number;
+  readonly arrears?: number;
+  readonly moveInSpecials?: string;
+  readonly subsidizedRent?: number;
+  readonly lastPaidDate?: string;
+  readonly utilityBillbacks?: number;
+  readonly leaseBreakFee?: number;
+  readonly annualRent?: number;
+  readonly notes?: string;
+}
+
+/** Document attached to a unit (floor plans, spreadsheets, etc.). */
+export interface UnitDocument {
+  readonly id: string;
+  readonly unitId: string;
+  readonly fileUrl: string;
+  readonly fileName: string;
+  readonly fileType: string;
+  readonly uploadedAt: string;
 }
 
 // ─── AI ─────────────────────────────────────────────────────────

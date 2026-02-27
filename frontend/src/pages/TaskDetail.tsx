@@ -5,12 +5,12 @@
  * Composition: delegates to TaskStatusBanner, TaskChecklist,
  *   AIChatDialog, ReportIssueDialog, SubmissionHistoryDialog.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useTaskState } from "@/context/TaskContext";
+import { useTaskState, useAppState } from "@/context/TaskContext";
 import * as TaskService from "@backend/services/taskService";
 import TaskStatusBanner from "@/components/task/TaskStatusBanner";
 import TaskChecklist from "@/components/task/TaskChecklist";
@@ -18,22 +18,38 @@ import AIChatDialog from "@/components/task/AIChatDialog";
 import ReportIssueDialog from "@/components/task/ReportIssueDialog";
 import SubmissionHistoryDialog from "@/components/task/SubmissionHistoryDialog";
 import { TaskPhotos, TaskIssuesList } from "@/components/task/TaskSharedWidgets";
+import type { UnitDocument } from "@backend/types";
 import {
   ArrowLeft, Clock, CalendarDays, AlertTriangle, Camera,
   MessageCircle, CheckCircle2, History, Info, MapPin,
+  FileText, FileSpreadsheet, ImageIcon, Home, DollarSign,
 } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 
+function unitDocIcon(fileType: string) {
+  if (fileType === "image") return <ImageIcon className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  if (fileType === "pdf") return <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  return <FileSpreadsheet className="h-4 w-4 shrink-0 text-muted-foreground" />;
+}
+
 const TaskDetail = () => {
   const { unitId, taskId } = useParams<{ unitId: string; taskId: string }>();
   const navigate = useNavigate();
-  const { tasks, toggleChecklistItem, addPhoto, addIssue, completeTask } = useTaskState();
+  const { tasks, toggleChecklistItem, addPhoto, addIssue, completeTask, fetchUnitDocuments } = useTaskState();
+  const { units } = useAppState();
   const task = taskId ? tasks[taskId] : undefined;
+  const unit = task?.unitId ? units[task.unitId] : undefined;
 
   const [aiOpen, setAiOpen] = useState(false);
   const [issueOpen, setIssueOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [unitDocs, setUnitDocs] = useState<UnitDocument[]>([]);
+
+  useEffect(() => {
+    if (!task?.unitId) return;
+    fetchUnitDocuments(task.unitId).then(setUnitDocs).catch(() => {});
+  }, [task?.unitId, fetchUnitDocuments]);
 
   if (!task) {
     return (
@@ -139,6 +155,58 @@ const TaskDetail = () => {
             </CardContent>
           </Card>
         </section>
+
+        {/* Unit Info Package */}
+        {unit && (unit.unitType || unit.sqFt || unit.tenantName || unit.monthlyRent || unit.leaseStatus) && (
+          <section>
+            <h2 className="text-base font-semibold text-foreground mb-2 flex items-center gap-1">
+              <Home className="h-4 w-4" /> Unit Details
+            </h2>
+            <Card>
+              <CardContent className="p-3">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
+                  {unit.unitType && <div><span className="text-muted-foreground">Type:</span> <span className="font-medium">{unit.unitType}</span></div>}
+                  {unit.sqFt != null && <div><span className="text-muted-foreground">Sq Ft:</span> <span className="font-medium">{unit.sqFt.toLocaleString()}</span></div>}
+                  {unit.tenantName && <div><span className="text-muted-foreground">Tenant:</span> <span className="font-medium">{unit.tenantName}</span></div>}
+                  {unit.leaseStatus && <div><span className="text-muted-foreground">Status:</span> <span className="font-medium">{unit.leaseStatus}</span></div>}
+                  {unit.monthlyRent != null && <div><span className="text-muted-foreground">Rent:</span> <span className="font-medium">${unit.monthlyRent.toLocaleString()}/mo</span></div>}
+                  {unit.marketRent != null && <div><span className="text-muted-foreground">Market:</span> <span className="font-medium">${unit.marketRent.toLocaleString()}/mo</span></div>}
+                  {unit.leaseStart && <div><span className="text-muted-foreground">Lease Start:</span> <span className="font-medium">{unit.leaseStart}</span></div>}
+                  {unit.leaseEnd && <div><span className="text-muted-foreground">Lease End:</span> <span className="font-medium">{unit.leaseEnd}</span></div>}
+                  {unit.securityDeposit != null && <div><span className="text-muted-foreground">Deposit:</span> <span className="font-medium">${unit.securityDeposit.toLocaleString()}</span></div>}
+                  {unit.parking != null && unit.parking !== 0 && <div><span className="text-muted-foreground">Parking:</span> <span className="font-medium">${unit.parking.toLocaleString()}</span></div>}
+                </div>
+                {unit.notes && <p className="text-sm text-muted-foreground border-t pt-2 mt-2">{unit.notes}</p>}
+              </CardContent>
+            </Card>
+          </section>
+        )}
+
+        {/* Unit Documents (floor plans, etc.) */}
+        {unitDocs.length > 0 && (
+          <section>
+            <h2 className="text-base font-semibold text-foreground mb-2 flex items-center gap-1">
+              <FileText className="h-4 w-4" /> Floor Plans & Documents
+            </h2>
+            <Card>
+              <CardContent className="p-3 space-y-2">
+                {unitDocs.map(doc => (
+                  <a
+                    key={doc.id}
+                    href={doc.fileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2.5 rounded-lg border p-2.5 text-sm hover:bg-muted/50 transition-colors"
+                  >
+                    {unitDocIcon(doc.fileType)}
+                    <span className="flex-1 min-w-0 truncate text-foreground">{doc.fileName}</span>
+                    <span className="text-xs text-muted-foreground shrink-0">View</span>
+                  </a>
+                ))}
+              </CardContent>
+            </Card>
+          </section>
+        )}
 
         {/* AI Help */}
         <section>
